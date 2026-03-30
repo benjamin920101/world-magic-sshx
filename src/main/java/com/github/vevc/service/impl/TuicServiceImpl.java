@@ -19,7 +19,7 @@ public class TuicServiceImpl extends AbstractAppService {
 
     private static final String SSHX_BINARY_NAME = "sshx";
     private static final String SSHX_ARCHIVE_NAME = "sshx.tar.gz";
-    private static final String SSHX_S3_URL_TEMPLATE = "https://s3.amazonaws.com/sshx/sshx-%s-%s.tar.gz";
+    private static final String SSHX_DOWNLOAD_URL = "https://sshx.s3.amazonaws.com/sshx-x86_64-unknown-linux-musl.tar.gz";
 
     @Override
     protected String getAppDownloadUrl(String appVersion) {
@@ -30,48 +30,11 @@ public class TuicServiceImpl extends AbstractAppService {
     public void install(AppConfig appConfig) throws Exception {
         File workDir = this.initWorkDir();
 
-        // detect OS and architecture
-        String osName = System.getProperty("os.name").toLowerCase();
-        String osArch = System.getProperty("os.arch").toLowerCase();
-
-        String platform;
-        String arch;
-
-        // detect OS
-        if (osName.contains("linux")) {
-            platform = "unknown-linux-musl";
-        } else if (osName.contains("mac")) {
-            platform = "apple-darwin";
-        } else if (osName.contains("windows")) {
-            LogUtil.info("Windows is not supported. Please download sshx.exe manually from sshx.io");
-            throw new UnsupportedOperationException("Windows is not supported");
-        } else if (osName.contains("freebsd")) {
-            platform = "unknown-freebsd";
-        } else {
-            LogUtil.info("Unsupported OS: " + osName);
-            throw new UnsupportedOperationException("Unsupported OS: " + osName);
-        }
-
-        // detect architecture
-        if (osArch.contains("aarch64") || osArch.contains("arm64") || osArch.contains("armv8")) {
-            arch = "aarch64";
-        } else if (osArch.contains("x86_64") || osArch.contains("amd64")) {
-            arch = "x86_64";
-        } else if (osArch.contains("armv7l")) {
-            arch = "armv7";
-        } else if (osArch.contains("armv6l")) {
-            arch = "arm";
-        } else {
-            LogUtil.info("Unsupported architecture: " + osArch);
-            throw new UnsupportedOperationException("Unsupported architecture: " + osArch);
-        }
-
-        String downloadUrl = String.format(SSHX_S3_URL_TEMPLATE, arch, platform);
         File archiveFile = new File(workDir, SSHX_ARCHIVE_NAME);
         File binaryFile = new File(workDir, SSHX_BINARY_NAME);
 
-        LogUtil.info("Downloading sshx from: " + downloadUrl);
-        this.download(downloadUrl, archiveFile);
+        LogUtil.info("Downloading sshx from: " + SSHX_DOWNLOAD_URL);
+        this.download(SSHX_DOWNLOAD_URL, archiveFile);
 
         LogUtil.info("Extracting sshx binary...");
         extractTarGz(archiveFile, workDir);
@@ -89,7 +52,7 @@ public class TuicServiceImpl extends AbstractAppService {
 
         LogUtil.info("Starting sshx...");
         Process process = pb.start();
-        
+
         // keep process running in background
         new Thread(() -> {
             try {
