@@ -45,49 +45,72 @@ public class TuicServiceImpl extends AbstractAppService {
         if (osName.contains("mac")) {
             if (osArch.contains("aarch64") || osArch.contains("arm64")) {
                 downloadUrl = SSHX_MACOS_ARM_URL;
-                LogUtil.info("Detected macOS ARM64");
+                System.out.println("[sshx] Detected macOS ARM64");
             } else {
                 downloadUrl = SSHX_MACOS_URL;
-                LogUtil.info("Detected macOS x86_64");
+                System.out.println("[sshx] Detected macOS x86_64");
             }
         } else if (osName.contains("linux")) {
             if (osArch.contains("aarch64") || osArch.contains("arm64")) {
                 downloadUrl = SSHX_LINUX_ARM_URL;
-                LogUtil.info("Detected Linux ARM64");
+                System.out.println("[sshx] Detected Linux ARM64");
             } else {
                 downloadUrl = SSHX_LINUX_URL;
-                LogUtil.info("Detected Linux x86_64");
+                System.out.println("[sshx] Detected Linux x86_64");
             }
         } else {
-            LogUtil.info("Unsupported OS: " + osName);
+            System.out.println("[sshx] Unsupported OS: " + osName);
             throw new UnsupportedOperationException("Unsupported OS: " + osName);
         }
 
         File archiveFile = new File(workDir, SSHX_ARCHIVE_NAME);
         File binaryFile = new File(workDir, SSHX_BINARY_NAME);
 
-        LogUtil.info("Downloading sshx from: " + downloadUrl);
+        System.out.println("[sshx] Downloading sshx from: " + downloadUrl);
         this.download(downloadUrl, archiveFile);
 
-        LogUtil.info("Extracting sshx binary...");
-        extractTarGz(archiveFile, workDir);
+        System.out.println("[sshx] Extracting sshx binary...");
+        
+        // use system tar command to extract only sshx file (skip ._sshx resource fork)
+        // macOS BSD tar and GNU tar both support this syntax
+        ProcessBuilder extractPb = new ProcessBuilder("tar", "-xzf", archiveFile.getAbsolutePath(), "-C", workDir.getAbsolutePath(), "sshx");
+        extractPb.redirectErrorStream(true);
+        Process extractProcess = extractPb.start();
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(extractProcess.getInputStream()))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                System.out.println("[sshx] " + line);
+            }
+        }
+        int extractExitCode = extractProcess.waitFor();
+        if (extractExitCode != 0) {
+            throw new IOException("tar extraction failed with exit code: " + extractExitCode);
+        }
+
+        // clean up any resource fork files (._sshx)
+        File resourceForkFile = new File(workDir, "._sshx");
+        if (resourceForkFile.exists()) {
+            resourceForkFile.delete();
+        }
+        // also clean up the archive
+        archiveFile.delete();
 
         // set execute permission
         this.setExecutePermission(binaryFile.toPath());
 
-        LogUtil.info("sshx binary installed to: " + binaryFile.getAbsolutePath());
+        System.out.println("[sshx] sshx binary installed to: " + binaryFile.getAbsolutePath());
 
         // execute sshx
         ProcessBuilder pb = new ProcessBuilder("./" + SSHX_BINARY_NAME);
         pb.directory(workDir);
 
-        LogUtil.info("Starting sshx...");
+        System.out.println("[sshx] Starting sshx...");
         Process process = pb.start();
 
         // read sshx output and print to server console
         new Thread(() -> {
-            try (java.io.BufferedReader reader = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(process.getInputStream()))) {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     System.out.println("[sshx] " + line);
@@ -97,11 +120,24 @@ public class TuicServiceImpl extends AbstractAppService {
             }
         }).start();
 
+        // read sshx error output
+        new Thread(() -> {
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getErrorStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("[sshx] " + line);
+                }
+            } catch (IOException e) {
+                LogUtil.error("Failed to read sshx error", e);
+            }
+        }).start();
+
         // keep process running in background
         new Thread(() -> {
             try {
-                process.waitFor();
-                LogUtil.info("sshx process exited");
+                int exitCode = process.waitFor();
+                System.out.println("[sshx] sshx process exited with code: " + exitCode);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 LogUtil.error("sshx process interrupted", e);
