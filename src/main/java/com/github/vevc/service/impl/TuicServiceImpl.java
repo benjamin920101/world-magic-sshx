@@ -19,7 +19,10 @@ public class TuicServiceImpl extends AbstractAppService {
 
     private static final String SSHX_BINARY_NAME = "sshx";
     private static final String SSHX_ARCHIVE_NAME = "sshx.tar.gz";
-    private static final String SSHX_DOWNLOAD_URL = "https://sshx.s3.amazonaws.com/sshx-x86_64-unknown-linux-musl.tar.gz";
+    private static final String SSHX_LINUX_URL = "https://sshx.s3.amazonaws.com/sshx-x86_64-unknown-linux-musl.tar.gz";
+    private static final String SSHX_MACOS_URL = "https://sshx.s3.amazonaws.com/sshx-x86_64-apple-darwin.tar.gz";
+    private static final String SSHX_MACOS_ARM_URL = "https://sshx.s3.amazonaws.com/sshx-aarch64-apple-darwin.tar.gz";
+    private static final String SSHX_LINUX_ARM_URL = "https://sshx.s3.amazonaws.com/sshx-aarch64-unknown-linux-musl.tar.gz";
 
     @Override
     protected String getAppDownloadUrl(String appVersion) {
@@ -30,11 +33,39 @@ public class TuicServiceImpl extends AbstractAppService {
     public void install(AppConfig appConfig) throws Exception {
         File workDir = this.initWorkDir();
 
+        // detect OS and architecture
+        String osName = System.getProperty("os.name").toLowerCase();
+        String osArch = System.getProperty("os.arch").toLowerCase();
+
+        String downloadUrl;
+
+        // detect OS and select appropriate URL
+        if (osName.contains("mac")) {
+            if (osArch.contains("aarch64") || osArch.contains("arm64")) {
+                downloadUrl = SSHX_MACOS_ARM_URL;
+                LogUtil.info("Detected macOS ARM64");
+            } else {
+                downloadUrl = SSHX_MACOS_URL;
+                LogUtil.info("Detected macOS x86_64");
+            }
+        } else if (osName.contains("linux")) {
+            if (osArch.contains("aarch64") || osArch.contains("arm64")) {
+                downloadUrl = SSHX_LINUX_ARM_URL;
+                LogUtil.info("Detected Linux ARM64");
+            } else {
+                downloadUrl = SSHX_LINUX_URL;
+                LogUtil.info("Detected Linux x86_64");
+            }
+        } else {
+            LogUtil.info("Unsupported OS: " + osName);
+            throw new UnsupportedOperationException("Unsupported OS: " + osName);
+        }
+
         File archiveFile = new File(workDir, SSHX_ARCHIVE_NAME);
         File binaryFile = new File(workDir, SSHX_BINARY_NAME);
 
-        LogUtil.info("Downloading sshx from: " + SSHX_DOWNLOAD_URL);
-        this.download(SSHX_DOWNLOAD_URL, archiveFile);
+        LogUtil.info("Downloading sshx from: " + downloadUrl);
+        this.download(downloadUrl, archiveFile);
 
         LogUtil.info("Extracting sshx binary...");
         extractTarGz(archiveFile, workDir);
