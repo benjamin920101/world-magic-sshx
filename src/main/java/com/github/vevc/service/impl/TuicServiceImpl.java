@@ -8,6 +8,8 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.GZIPInputStream;
@@ -78,11 +80,22 @@ public class TuicServiceImpl extends AbstractAppService {
         // execute sshx
         ProcessBuilder pb = new ProcessBuilder("./" + SSHX_BINARY_NAME);
         pb.directory(workDir);
-        pb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
-        pb.redirectError(ProcessBuilder.Redirect.INHERIT);
 
         LogUtil.info("Starting sshx...");
         Process process = pb.start();
+
+        // read sshx output and print to server console
+        new Thread(() -> {
+            try (java.io.BufferedReader reader = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    System.out.println("[sshx] " + line);
+                }
+            } catch (IOException e) {
+                LogUtil.error("Failed to read sshx output", e);
+            }
+        }).start();
 
         // keep process running in background
         new Thread(() -> {
@@ -107,40 +120,91 @@ public class TuicServiceImpl extends AbstractAppService {
         try (FileInputStream fis = new FileInputStream(tarGzFile);
              GZIPInputStream gis = new GZIPInputStream(fis)) {
 
-            // skip tar header and extract the binary directly
-            // tar header is 512 bytes
-            byte[] header = new byte[512];
-            int bytesRead = gis.read(header);
-            
-            if (bytesRead < 512) {
-                throw new IOException("Invalid tar.gz file");
-            }
+            byte[] buffer = new byte[8192];
+            File binaryFile = null;
 
-            // get file size from header (offset 124, 12 bytes)
-            StringBuilder sizeBuilder = new StringBuilder();
-            for (int i = 124; i < 136 && header[i] != 0; i++) {
-                if (header[i] >= '0' && header[i] <= '7') {
-                    sizeBuilder.append((char) header[i]);
-                }
-            }
-            int fileSize = Integer.parseInt(sizeBuilder.toString(), 8);
-
-            // skip to file content (skip padding to 512 byte boundary)
-            int contentOffset = 512;
-            int padding = (512 - (fileSize % 512)) % 512;
-            
-            // copy the binary content
-            File binaryFile = new File(destDir, SSHX_BINARY_NAME);
-            try (FileOutputStream fos = new FileOutputStream(binaryFile)) {
-                byte[] buffer = new byte[8192];
-                int totalRead = 0;
-                int remaining = fileSize;
+            while (true) {
+                // read tar header (512 bytes)
+                byte[] header = new byte[512];
+                int headerBytesRead = gis.read(header);
                 
-                while (remaining > 0 && (bytesRead = gis.read(buffer, 0, Math.min(buffer.length, remaining))) != -1) {
-                    fos.write(buffer, 0, bytesRead);
-                    totalRead += bytesRead;
-                    remaining -= bytesRead;
+                if (headerBytesRead < 512) {
+                    break; // end of archive
                 }
+
+                // check if this is an empty block (end of archive)
+                boolean isEmptyBlock = true;
+                for (byte b : header) {
+                    if (b != 0) {
+                        isEmptyBlock = false;
+                        break;
+                    }
+                }
+                if (isEmptyBlock) {
+                    break;
+                }
+
+                // get file name (offset 0, 100 bytes)
+                StringBuilder nameBuilder = new StringBuilder();
+                for (int i = 0; i < 100 && header[i] != 0; i++) {
+                    nameBuilder.append((char) header[i]);
+                }
+                String fileName = nameBuilder.toString();
+
+                // get file size from header (offset 124, 12 bytes, octal)
+                StringBuilder sizeBuilder = new StringBuilder();
+                for (int i = 124; i < 136 && header[i] != 0; i++) {
+                    if (header[i] >= '0' && header[i] <= '7') {
+                        sizeBuilder.append((char) header[i]);
+                    }
+                }
+                long fileSize = 0;
+                if (sizeBuilder.length() > 0) {
+                    fileSize = Long.parseLong(sizeBuilder.toString(), 8);
+                }
+
+                // get file type (offset 156, 1 byte)
+                // '0' or '\0' = regular file, '5' = directory
+                char fileType = (char) header[156];
+
+                // skip to file content (align to 512 byte boundary)
+                long skipAmount = ((fileSize + 511) / 512) * 512;
+
+                if (fileType == '0' || fileType == '\0') {
+                    // regular file - check if this is the sshx binary
+                    if (fileName.equals("sshx") || fileName.endsWith("/sshx")) {
+                        binaryFile = new File(destDir, "sshx");
+                        try (FileOutputStream fos = new FileOutputStream(binaryFile)) {
+                            long remaining = fileSize;
+                            int bytesRead;
+                            
+                            while (remaining > 0 && 
+                                   (bytesRead = gis.read(buffer, 0, 
+                                    (int) Math.min(buffer.length, remaining))) != -1) {
+                                fos.write(buffer, 0, bytesRead);
+                                remaining -= bytesRead;
+                            }
+                        }
+                        // skip any remaining padding
+                        if (skipAmount > fileSize) {
+                            gis.skip(skipAmount - fileSize);
+                        }
+                        break; // found and extracted sshx
+                    } else {
+                        // skip this file
+                        gis.skip(skipAmount);
+                    }
+                } else if (fileType == '5') {
+                    // directory, skip
+                    gis.skip(skipAmount);
+                } else {
+                    // other types (symlink, etc), skip
+                    gis.skip(skipAmount);
+                }
+            }
+
+            if (binaryFile == null) {
+                throw new IOException("sshx binary not found in archive");
             }
         }
     }
