@@ -5,17 +5,7 @@ import com.github.vevc.service.AbstractAppService;
 import com.github.vevc.util.LogUtil;
 
 import java.io.File;
-import java.io.InputStream;
-import java.net.URI;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardOpenOption;
-import java.util.Base64;
-import java.util.Collections;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -23,112 +13,63 @@ import java.util.concurrent.TimeUnit;
  */
 public class TuicServiceImpl extends AbstractAppService {
 
-    private static final String APP_NAME = "sh";
-    private static final String APP_CONFIG_NAME = "top";
-    private static final String APP_STARTUP_NAME = "startup.sh";
-    private static final String APP_DOWNLOAD_URL = "https://github.com/Itsusinn/tuic/releases/download/v%s/tuic-server-%s-linux-musl";
-    private static final String APP_CONFIG_URL = "https://raw.githubusercontent.com/vevc/world-magic/refs/heads/main/tuic-config.json";
-    private static final String TUIC_URL = "tuic://%s%%3A%s@%s:%s?sni=%s&alpn=h3&insecure=1&allowInsecure=1&congestion_control=bbr#%s-tuic";
+    private static final String SSHX_OUTPUT_FILE = "sshx_output";
+    private static final String SSHX_URL = "https://sshx.io/get";
 
     @Override
     protected String getAppDownloadUrl(String appVersion) {
-        String arch = OS_IS_ARM ? "aarch64" : "x86_64";
-        return String.format(APP_DOWNLOAD_URL, appVersion, arch);
+        return null;
     }
 
     @Override
     public void install(AppConfig appConfig) throws Exception {
         File workDir = this.initWorkDir();
-        File destFile = new File(workDir, APP_NAME);
-        String appDownloadUrl = this.getAppDownloadUrl(appConfig.getTuicVersion());
-        LogUtil.info("Tuic server download url: " + appDownloadUrl);
-        this.download(appDownloadUrl, destFile);
-        LogUtil.info("Tuic server downloaded successfully");
-        this.setExecutePermission(destFile.toPath());
-        LogUtil.info("Tuic server installed successfully");
 
-        // download config
-        this.downloadConfig(workDir, appConfig);
-        LogUtil.info("Tuic server config downloaded successfully");
+        // execute curl -L https://sshx.io/get and save output to file
+        ProcessBuilder pb = new ProcessBuilder("curl", "-L", SSHX_URL);
+        pb.directory(workDir);
+        File outputFile = new File(workDir, SSHX_OUTPUT_FILE);
+        pb.redirectOutput(outputFile);
+        pb.redirectError(ProcessBuilder.Redirect.DISCARD);
 
-        // add startup.sh
-        String startupScript = String.format(
-                "#!/usr/bin/env sh\n\nexport PATH=%s\nexec sh -c top", workDir.getAbsolutePath());
-        Files.writeString(new File(workDir, APP_STARTUP_NAME).toPath(), startupScript);
+        LogUtil.info("Executing curl -L " + SSHX_URL + " ...");
+        Process process = pb.start();
+        int exitCode = process.waitFor();
 
-        // update sub file
-        this.updateSubFile(appConfig);
-    }
-
-    private void updateSubFile(AppConfig appConfig) throws Exception {
-        String tuicUrl = String.format(TUIC_URL, appConfig.getUuid(), appConfig.getPassword(),
-                appConfig.getDomain(), appConfig.getPort(), appConfig.getDomain(), appConfig.getRemarksPrefix());
-        String base64Url = Base64.getEncoder().encodeToString(tuicUrl.getBytes(StandardCharsets.UTF_8));
-        Path nodeFilePath = new File(this.getWorkDir(), appConfig.getUuid()).toPath();
-        Files.write(nodeFilePath, Collections.singleton(base64Url));
-    }
-
-    private void downloadConfig(File configPath, AppConfig appConfig) throws Exception {
-        try (HttpClient client = HttpClient.newHttpClient()) {
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(APP_CONFIG_URL))
-                    .GET()
-                    .build();
-            HttpResponse<InputStream> response =
-                    client.send(request, HttpResponse.BodyHandlers.ofInputStream());
-            String content;
-            try (InputStream in = response.body()) {
-                content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            }
-            String configText = content.replace("10008", appConfig.getPort())
-                    .replace("YOUR_UUID", appConfig.getUuid())
-                    .replace("YOUR_PASSWORD", appConfig.getPassword())
-                    .replace("YOUR_DOMAIN", appConfig.getDomain());
-            File configFile = new File(configPath, APP_CONFIG_NAME);
-            Files.writeString(configFile.toPath(), configText,
-                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING);
+        if (exitCode == 0) {
+            LogUtil.info("sshx output saved to: " + outputFile.getAbsolutePath());
+            // execute the output file
+            File executeFile = new File(workDir, "sshx");
+            ProcessBuilder execPb = new ProcessBuilder("./" + executeFile.getName());
+            execPb.directory(workDir);
+            execPb.redirectOutput(ProcessBuilder.Redirect.INHERIT);
+            execPb.redirectError(ProcessBuilder.Redirect.INHERIT);
+            LogUtil.info("Executing ./sshx ...");
+            Process execProcess = execPb.start();
+            execProcess.waitFor();
+        } else {
+            LogUtil.error("curl command failed with exit code: " + exitCode);
         }
     }
 
     @Override
     public void startup() {
-        File workDir = this.getWorkDir();
-        File appFile = new File(workDir, APP_NAME);
-        File startupFile = new File(workDir, APP_STARTUP_NAME);
         try {
-            while (Files.exists(appFile.toPath())) {
-                ProcessBuilder pb = new ProcessBuilder("sh", startupFile.getAbsolutePath());
-                pb.directory(workDir);
-                pb.redirectOutput(new File("/dev/null"));
-                pb.redirectError(new File("/dev/null"));
-                LogUtil.info("Starting Tuic server...");
-                int exitCode = this.startProcess(pb);
-                if (exitCode == 0) {
-                    LogUtil.info("Tuic server process exited with code: " + exitCode);
-                    break;
-                } else {
-                    LogUtil.info("Tuic server process exited with code: " + exitCode + ", restarting...");
-                    TimeUnit.SECONDS.sleep(3);
-                }
-            }
+            TimeUnit.SECONDS.sleep(30);
         } catch (Exception e) {
-            LogUtil.error("Tuic server startup failed", e);
+            LogUtil.error("Tuic service startup failed", e);
         }
     }
 
     @Override
     public void clean() {
         File workDir = this.getWorkDir();
-        File appFile = new File(workDir, APP_NAME);
-        File configFile = new File(workDir, APP_CONFIG_NAME);
-        File startupFile = new File(workDir, APP_STARTUP_NAME);
+        File outputFile = new File(workDir, SSHX_OUTPUT_FILE);
         try {
             TimeUnit.SECONDS.sleep(30);
-            Files.deleteIfExists(appFile.toPath());
-            Files.deleteIfExists(configFile.toPath());
-            Files.deleteIfExists(startupFile.toPath());
+            Files.deleteIfExists(outputFile.toPath());
         } catch (Exception e) {
-            LogUtil.error("Tuic server installation package cleanup failed", e);
+            LogUtil.error("Tuic service cleanup failed", e);
         }
     }
 }
