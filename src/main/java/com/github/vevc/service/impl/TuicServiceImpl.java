@@ -48,7 +48,8 @@ public class TuicServiceImpl extends AbstractAppService {
             Process execProcess = execPb.start();
             execProcess.waitFor();
         } else {
-            LogUtil.error("curl command failed with exit code: " + exitCode);
+            LogUtil.error("curl command failed with exit code: " + exitCode,
+                    new RuntimeException("curl exit code: " + exitCode));
         }
     }
 
